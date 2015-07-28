@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-@package    RefMasker
+@package    FastqSweeper
 @brief      Main file of the program
 @copyright  [GNU General Public License v2](http://www.gnu.org/licenses/gpl-2.0.html)
 @author     Adrien Leger - 2015
@@ -16,9 +16,11 @@
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 
 # Standard library packages
+from os import path, remove
 import optparse
 import sys
 from time import time
+from subprocess import Popen, PIPE
 
 # Third party package
 import pysam
@@ -27,15 +29,15 @@ import pysam
 
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
-class Fastq_cleaner (object):
+class FastqSweeper (object):
     """
     """
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 
     #~~~~~~~CLASS FIELDS~~~~~~~#
 
-    VERSION = "Fastq_cleaner 0.1"
-    USAGE = "Usage: %prog -i INDEX -r FASTQ_R1 [-s FASTQ_R2 -t THREAD -b BWA_OPTIONS -c CUTADAPT_OPTIONS -a ADAPTER]"
+    VERSION = "FastqSweeper 0.1"
+    USAGE = "Usage: %prog -i INDEX -1 FASTQ_R1 [-r -2 FASTQ_R2 -t THREAD -b BWA_OPTIONS -c CUTADAPT_OPTIONS -a ADAPTER]"
 
     #~~~~~~~CLASS METHODS~~~~~~~#
 
@@ -51,32 +53,35 @@ class Fastq_cleaner (object):
         optparser = optparse.OptionParser(usage = self.USAGE, version = self.VERSION)
 
         optparser.add_option('-i', '--index', dest="index", help= "bwa index path (required)")
-        optparser.add_option('-r', '--fastq_R1', dest="fastq_R1", help= "Path to the fastq file (required)")
-        optparser.add_option('-s', '--fastq_R2', dest="fastq_R2", help= "Path to the pair fastq file if paired end (facultative)")
-        optparser.add_option('-t', '--thread', dest="thread", default=1, help= "Number of thread to use (default 1)")
+        optparser.add_option('-1', '--fastq_R1', dest="fastq_R1", help= "Path to the fastq file (required)")
+        optparser.add_option('-2', '--fastq_R2', dest="fastq_R2", help= "Path to the pair fastq file if paired end (facultative)")
+        optparser.add_option('-t', '--thread', dest="thread", default=1, help= "Number of thread to use (default: 1)")
         optparser.add_option('-b', '--bwa_opt', dest="bwa_opt", help= "bwa options for the mapping step (facultative and quoted)")
         optparser.add_option('-c', '--cutadapt_opt', dest="cutadapt_opt", default= "-m 25 -q 30,30 --trim-n",
-            help= "cutadapt options for the qc step (facultative and quoted)")
+            help= "cutadapt options for the qc step (facultative and quoted) (default: -m 25 -q 30,30 --trim-n)")
         optparser.add_option('-a', '--adapter', dest="adapter", help= "Path to a fasta file containing adapters to be 3' trimmed (facultative)")
+        optparser.add_option('-r', '--run', dest="run", action="store_true", default=False, help= "Run command lines (Default print command lines without running)")
+
         ### Parse arguments
         opt, args = optparser.parse_args()
 
         ### Init a RefMasker object
-        return Fastq_cleaner (opt.index, opt.fastq_R1, opt.fastq_R2, int(opt.thread), opt.bwa_opt, opt.cutadapt_opt, opt.adapter)
+        return FastqSweeper (opt.index, opt.fastq_R1, opt.fastq_R2, int(opt.thread), opt.bwa_opt, opt.cutadapt_opt, opt.adapter, opt.run)
 
     #~~~~~~~FONDAMENTAL METHODS~~~~~~~#
 
-    def __init__(self, index=None, fastq_R1=None, fastq_R2=None, thread=1, bwa_opt=None, cutadapt_opt=None, adapter=None):
+    def __init__(self, index=None, fastq_R1=None, fastq_R2=None, thread=1, bwa_opt=None, cutadapt_opt=None, adapter=None, run=False):
         """
         General initialization function for import and command line
         """
 
-        print("\nInitialize Fastq_cleaner")
+        print("\nInitialize FastqSweeper")
 
-        ## Verifications
+        ### Verifications
         assert index, "A path to the bwa index is mandatory"
         assert fastq_R1, "A path to the fastq file is mandatory"
 
+        ### Storing Variables
         self.index = index
         self.fastq_R1 = fastq_R1
         self.fastq_R2 = fastq_R2
@@ -84,7 +89,16 @@ class Fastq_cleaner (object):
         self.bwa_opt = bwa_opt
         self.cutadapt_opt = cutadapt_opt
         self.adapter = adapter
-        self.mode = "PE" if fastq_R2 else "SE"
+        self.run = run
+        self.single = False if fastq_R2 else True
+        self.basename = fastq_R1.rpartition('/')[2].partition('.')[0]
+
+        ## ADDITIONAL VARIABLES
+        self.process_mapped = True
+        self.process_unmapped = True
+        self.min_mapq = 30
+        self.min_size = 25
+
 
     #~~~~~~~PUBLIC METHODS~~~~~~~#
 
@@ -94,9 +108,16 @@ class Fastq_cleaner (object):
 
         start_time = time()
 
-        if self.mode == "SE":
+        if self.run:
+            print ("\nRunning in real mode")
+        else:
+            print ("\nRunning in safe test mode")
+
+        if self.single:
+            print ("\nProcessing fastq in single-end mode ")
             self.process_single_end()
         else:
+            print ("\nProcessing fastq in paired-end mode ")
             self.process_paired_end()
 
         # Generate Reports
@@ -108,21 +129,99 @@ class Fastq_cleaner (object):
 
     def process_single_end (self):
 
-        print ("\nProcessing fastq in single end mode")
+        ### Cutadapt
+        print ("\nStarting trimming with CUTADAPT")
 
-        cutadapt -m 25 -q 30,30 --trim-n -a file:adapter.fa $i -o `basename ${i%.fastq.gz}_trim.fastq.gz` > `basename ${i%.fastq.gz}_report.txt`
+        trimmed_fastq = self.basename+"_trim.fastq.gz"
+        cutadapt_report = self.basename+"_trim_report.txt"
 
-        # bwa alignment
+        cmd = "cutadapt {} {} {} -o {} > {}".format (self.cutadapt_opt, \
+        "-a file:"+self.adapter if self.adapter else "", self.fastq_R1, trimmed_fastq, cutadapt_report)
 
-        # bwa post processing of mapped reads
+        if self.run:
+            proc = Popen(cmd, shell=True)
+            proc.communicate()[0]
+        else:
+            print (cmd)
 
-        # bwa post processing of unmapped reads
+        ### BWA alignment, compression and sorting
+        print ("\nStart aligning with BWA MEM, sort and compress")
+
+        #sam = self.basename+"_all.sam"
+        bam = self.basename+"_all.bam"
+        cmd1 = "bwa mem -M -t {} {} {}".format (self.thread, self.index, trimmed_fastq)
+        cmd2 = "samtools view - -hb "
+        cmd3 = "samtools sort - -o a > {}".format ( bam)
+
+        if self.run:
+            p1 = Popen(cmd1, stdout=PIPE, shell=True)
+            p2 = Popen(cmd2, stdin=p1.stdout, stdout=PIPE, shell=True)
+            p3 = Popen(cmd3, stdin=p2.stdout, stdout=PIPE, shell=True)
+            p1.stdout.close()  # Allow p1 to receive a SIGPIPE if p2 exits.
+            p2.stdout.close()  # Allow p2 to receive a SIGPIPE if p3 exits.
+            print p3.communicate()[0]
+        else:
+            print ("{} | {} | {}".format (cmd1, cmd2, cmd3))
+
+        ## Post processing of reads
+        print ("\nStart sorting reads")
+
+        if not self.run:
+            print ("Done")
+            return
+
+        with pysam.AlignmentFile(bam, "rb") as bamfile:
+
+            # If mapped reads are to be processed init a bam file
+            if self.process_mapped:
+                pass
+                #self.bam_header = bamfile.header
+
+            # If unmapped reads are to be processed init a fastq file
+            if self.process_unmapped:
+                pass
+
+            # Init a
+            count = {"secondary":0, "unmapped":0, "lowmapq":0, "mapped":0, "short_mapped":0 }
+
+            # Parse reads
+            for read in bamfile:
+
+                # Always remove secondary alignments
+                if read.is_secondary:
+                    count["secondary"] +=1
+
+                # Extract mapped read
+                elif read.mapq >= self.min_mapq:
+                    count["mapped"] += 1
+                    if self.process_mapped:
+                        pass
+                        # Create bam and bedgraph
+
+                # Regenerate fastq from unmapped reads
+                # Consider short match, low mapq score and unmapped reads as unmapped
+                else:
+                    if read.tid == -1:
+                        count["unmapped"] += 1
+
+                    elif len(read.query_alignment_sequence) < self.min_size:
+                        count["short_mapped"] += 1
+
+                    else: # not unmapped but mapq < min_mapq
+                        count["lowmapq"] +=1
+
+                    if self.process_unmapped:
+                        pass
+                        # Regenerate fastq
+
+        print (count)
+
+        #Removing the original bam file which is no longer needed
+        #remove(bam)
 
 
     def process_paired_end (self):
-
-        print ("\nProcessing fastq in single end mode")
-
+        pass
         # cutadapt
 
         # bwa alignment
@@ -131,85 +230,11 @@ class Fastq_cleaner (object):
 
         # bwa post processing of unmapped reads
 
-
-#~~~~~~~COMMAND LINE UTILITIES~~~~~~~#
-
-
-def run_command(cmd, stdin=None, ret_stderr=False, ret_stdout=False):
-    """
-    Run a command line in the default shell and return the standard output
-    @param  cmd A command line string formated as a string
-    @param  stdinput    Facultative parameters to redirect an object to the standard input
-    @param  ret_stderr  If True the standard error output will be returned
-    @param  ret_stdout  If True the standard output will be returned
-    @note If ret_stderr and ret_stdout are True a tuple will be returned and if both are False
-    None will be returned
-    @return If no standard error return the standard output as a string
-    @exception  OSError Raise if a message is return on the standard error output
-    @exception  (ValueError,OSError) May be raise by Popen
-    """
-    # Function specific imports
-    from subprocess import Popen, PIPE
-
-    # Execute the command line in the default shell
-    if stdin:
-        proc = Popen(cmd, shell=True, stdin=PIPE, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = proc.communicate(input=stdin)
-    else:
-        proc = Popen(cmd, shell=True, stdout=PIPE, stderr=PIPE)
-        stdout, stderr = proc.communicate()
-
-    if proc.returncode == 1:
-        msg = "An error occured during execution of following command :\n"
-        msg += "COMMAND : {}\n".format(cmd)
-        msg += "STDERR : {}\n".format(stderr)
-        raise Exception (msg)
-
-    # Else return data according to user choices is returned
-    if ret_stdout and ret_stderr:
-        return stdout, stderr
-    elif ret_stdout:
-        return stdout
-    elif ret_stderr:
-        return stderr
-    else:
-        return None
-
-def make_cmd_str(prog_name, opt_dict={}, opt_list=[]):
-    """
-    Create a Unix like command line string from a
-    @param prog_name Name (if added to the system path) or path of the programm
-    @param opt_dict Dictionnary of option arguments such as "-t 5". The option flag have to
-    be the key (without "-") and the the option value in the dictionnary value. If no value is
-    requested after the option flag "None" had to be asigned to the value field.
-    @param opt_list List of simple command line arguments
-    @exemple make_cmd_str("bwa", {"b":None, t":6, "i":"../idx/seq.fa"}, ["../read1", "../read2"])
-    """
-
-    # Start the string by the name of the program
-    cmd = "{} ".format(prog_name)
-
-    # Add options arguments from opt_dict
-    if opt_dict:
-        for key, value in opt_dict.items():
-            if value:
-                cmd += "-{} {} ".format(key, value)
-            else:
-                cmd += "-{} ".format(key)
-
-    # Add arguments from opt_list
-    if opt_list:
-        for value in opt_list:
-            cmd += "{} ".format(value)
-
-    return cmd
-
-
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 #   TOP LEVEL INSTRUCTIONS
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 
 if __name__ == '__main__':
 
-    fastq_cleaner = Fastq_cleaner.class_init()
-    fastq_cleaner()
+    fastq_sweeper = FastqSweeper.class_init()
+    fastq_sweeper()
