@@ -27,7 +27,6 @@ import pysam
 
 # Local packages
 
-
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 class FastqSweeper (object):
     """
@@ -37,7 +36,7 @@ class FastqSweeper (object):
     #~~~~~~~CLASS FIELDS~~~~~~~#
 
     VERSION = "FastqSweeper 0.1"
-    USAGE = "Usage: %prog -i INDEX -1 FASTQ_R1 [-r -2 FASTQ_R2 -t THREAD -b BWA_OPTIONS -c CUTADAPT_OPTIONS -a ADAPTER]"
+    USAGE = "Usage: %prog -i INDEX -1 FASTQ_R1 [-r -p -2 FASTQ_R2 -t INT -b BWA_OPT -c CUTADAPT_OPT -a ADAPTER -m INT -s INT]"
 
     #~~~~~~~CLASS METHODS~~~~~~~#
 
@@ -52,25 +51,60 @@ class FastqSweeper (object):
         ### Define parser usage, options
         optparser = optparse.OptionParser(usage = self.USAGE, version = self.VERSION)
 
-        optparser.add_option('-i', '--index', dest="index", help= "bwa index path (required)")
-        optparser.add_option('-1', '--fastq_R1', dest="fastq_R1", help= "Path to the fastq file (required)")
-        optparser.add_option('-2', '--fastq_R2', dest="fastq_R2", help= "Path to the pair fastq file if paired end (facultative)")
-        optparser.add_option('-t', '--thread', dest="thread", default=1, help= "Number of thread to use (default: 1)")
-        optparser.add_option('-b', '--bwa_opt', dest="bwa_opt", help= "bwa options for the mapping step (facultative and quoted)")
+        optparser.add_option('-i', '--index', dest="index",
+            help= "bwa index path (required)")
+        optparser.add_option('-1', '--fastq_R1', dest="fastq_R1",
+            help= "Path to the fastq file (required)")
+        optparser.add_option('-2', '--fastq_R2', dest="fastq_R2",
+            help= "Path to the pair fastq file if paired end (facultative)")
+        optparser.add_option('-t', '--thread', dest="thread", default=1,
+            help= "Number of thread to use (default: 1)")
+        optparser.add_option('-b', '--bwa_opt', dest="bwa_opt",
+            help= "bwa options for the mapping step (facultative and quoted)")
         optparser.add_option('-c', '--cutadapt_opt', dest="cutadapt_opt", default= "-m 25 -q 30,30 --trim-n",
             help= "cutadapt options for the qc step (facultative and quoted) (default: -m 25 -q 30,30 --trim-n)")
-        optparser.add_option('-a', '--adapter', dest="adapter", help= "Path to a fasta file containing adapters to be 3' trimmed (facultative)")
-        optparser.add_option('-r', '--run', dest="run", action="store_true", default=False, help= "Run command lines (Default print command lines without running)")
+        optparser.add_option('-a', '--adapter', dest="adapter",
+            help= "Path to a fasta file containing adapters to be 3' trimmed (facultative)")
+        optparser.add_option('-r', '--run', dest="run", action="store_true", default=False,
+            help= "Run command lines (default: False)")
+        optparser.add_option('-m', '--min_mapq', dest="min_mapq", default= 0,
+            help= "Minimal mapq quality to be considered mapped (default: 0)")
+        optparser.add_option('-s', '--min_match_size', dest="min_match_size", default= 0,
+            help= "Minimal size of match to be considered mapped (default: 0)")
+        optparser.add_option('-p', '--ignore_mapped', dest="ignore_mapped", action="store_true", default=False,
+            help= "Ignore mapped reads: ie do not create mapped bam and bedgraph files (default: False)")
 
         ### Parse arguments
         opt, args = optparser.parse_args()
 
         ### Init a RefMasker object
-        return FastqSweeper (opt.index, opt.fastq_R1, opt.fastq_R2, int(opt.thread), opt.bwa_opt, opt.cutadapt_opt, opt.adapter, opt.run)
+        return FastqSweeper (
+            index=opt.index,
+            fastq_R1=opt.fastq_R1,
+            fastq_R2=opt.fastq_R2,
+            thread=int(opt.thread),
+            bwa_opt=opt.bwa_opt,
+            cutadapt_opt=opt.cutadapt_opt,
+            adapter=opt.adapter,
+            run=opt.run,
+            min_mapq=int(opt.min_mapq),
+            min_match_size=int(opt.min_match_size),
+            ignore_mapped=opt.ignore_mapped)
 
     #~~~~~~~FONDAMENTAL METHODS~~~~~~~#
 
-    def __init__(self, index=None, fastq_R1=None, fastq_R2=None, thread=1, bwa_opt=None, cutadapt_opt=None, adapter=None, run=False):
+    def __init__(self,
+        index=None,
+        fastq_R1=None,
+        fastq_R2=None,
+        thread=1,
+        bwa_opt=None,
+        cutadapt_opt=None,
+        adapter=None,
+        run=False,
+        min_mapq=0,
+        min_match_size=0,
+        ignore_mapped=True):
         """
         General initialization function for import and command line
         """
@@ -90,14 +124,11 @@ class FastqSweeper (object):
         self.cutadapt_opt = cutadapt_opt
         self.adapter = adapter
         self.run = run
+        self.ignore_mapped = ignore_mapped
+        self.min_mapq = int(min_mapq)
+        self.min_size = int(min_match_size)
         self.single = False if fastq_R2 else True
         self.basename = fastq_R1.rpartition('/')[2].partition('.')[0]
-
-        ## ADDITIONAL VARIABLES
-        self.process_mapped = True
-        self.process_unmapped = True
-        self.min_mapq = 30
-        self.min_size = 25
 
 
     #~~~~~~~PUBLIC METHODS~~~~~~~#
@@ -173,15 +204,14 @@ class FastqSweeper (object):
         with pysam.AlignmentFile(bam, "rb") as bamfile:
 
             # If mapped reads are to be processed init a bam file
-            if self.process_mapped:
-                pass
+            if not self.ignore_mapped:
                 #self.bam_header = bamfile.header
-
-            # If unmapped reads are to be processed init a fastq file
-            if self.process_unmapped:
                 pass
 
-            # Init a
+            # Init a fastq file
+
+
+            # Init a dict of counters
             count = {"secondary":0, "unmapped":0, "lowmapq":0, "mapped":0, "short_mapped":0 }
 
             # Parse reads
@@ -192,9 +222,9 @@ class FastqSweeper (object):
                     count["secondary"] +=1
 
                 # Extract mapped read
-                elif read.mapq >= self.min_mapq:
+                elif read.tid != -1 and read.mapq >= self.min_mapq:
                     count["mapped"] += 1
-                    if self.process_mapped:
+                    if not self.ignore_mapped:
                         pass
                         # Create bam and bedgraph
 
@@ -210,9 +240,7 @@ class FastqSweeper (object):
                     else: # not unmapped but mapq < min_mapq
                         count["lowmapq"] +=1
 
-                    if self.process_unmapped:
-                        pass
-                        # Regenerate fastq
+                    # Regenerate fastq
 
         print (count)
 
