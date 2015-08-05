@@ -21,6 +21,7 @@ import optparse
 import sys
 from time import time
 from subprocess import Popen, PIPE
+import shlex
 from gzip import open as gopen
 from collections import OrderedDict
 from datetime import datetime
@@ -39,7 +40,7 @@ class FastqSweeper (object):
     #~~~~~~~CLASS FIELDS~~~~~~~#
 
     VERSION = "FastqSweeper 0.1"
-    USAGE = "Usage: %prog -i INDEX -1 FASTQ_R1 [-r -2 FASTQ_R2 -t INT -b BWA_OPT -c CUTADAPT_OPT -a ADAPTER -m INT -s INT]"
+    USAGE = "Usage: %prog -i INDEX -1 FASTQ_R1 [-2 FASTQ_R2] [...]"
 
     #~~~~~~~CLASS METHODS~~~~~~~#
 
@@ -55,25 +56,27 @@ class FastqSweeper (object):
         optparser = optparse.OptionParser(usage = self.USAGE, version = self.VERSION)
 
         optparser.add_option('-i', '--index', dest="index",
-            help= "bwa index path (required)")
+            help= "Path to the bwa index basename")
         optparser.add_option('-1', '--fastq_R1', dest="fastq_R1",
-            help= "Path to the fastq file (required)")
+            help= "Path to the fastq file")
         optparser.add_option('-2', '--fastq_R2', dest="fastq_R2",
-            help= "Path to the pair fastq file if paired end (facultative)")
-        optparser.add_option('-t', '--thread', dest="thread", default=1,
-            help= "Number of thread to use (default: 1)")
-        optparser.add_option('-b', '--bwa_opt', dest="bwa_opt", default= "-M",
-            help= "bwa options for the mapping step (facultative and quoted) (default: -M)")
-        optparser.add_option('-c', '--cutadapt_opt', dest="cutadapt_opt", default= "-m 25 -q 30,30 --trim-n",
-            help= "cutadapt options for the qc step (facultative and quoted) (default: -m 25 -q 30,30 --trim-n)")
-        optparser.add_option('-a', '--adapter', dest="adapter",
-            help= "Path to a fasta file containing adapters to be 3' trimmed (facultative)")
+            help= "[facultative] Path to the pair fastq file if paired end")
         optparser.add_option('-r', '--run', dest="run", action="store_true", default=False,
-            help= "Run command lines (default: False)")
+            help= "[facultative] Run command lines else the sotware run in demo mode (default: False)")
+        optparser.add_option('-t', '--thread', dest="thread", default=1,
+            help= "[facultative] Number of thread to use (default: 1)")
+        optparser.add_option('-b', '--bwa_opt', dest="bwa_opt", default= "-M",
+            help= "[facultative] bwa options for the mapping step (facultative and quoted) (default: -M)")
+        optparser.add_option('-c', '--cutadapt_opt', dest="cutadapt_opt", default= "-m 25 -q 30,30 --trim-n",
+            help= "[facultative] cutadapt options for the qc step (facultative and quoted) (default: -m 25 -q 30,30 --trim-n)")
+        optparser.add_option('-a', '--adapter', dest="adapter",
+            help= "[facultative] Path to a fasta file containing adapters to be 3' trimmed (facultative)")
         optparser.add_option('-m', '--min_mapq', dest="min_mapq", default= 0,
-            help= "Minimal mapq quality to be considered mapped (default: 0)")
+            help= "[facultative] Minimal mapq quality to be considered mapped (default: 0)")
         optparser.add_option('-s', '--min_match_size', dest="min_match_size", default= 0,
-            help= "Minimal size of match to be considered mapped (default: 0)")
+            help= "[facultative] Minimal size of match to be considered mapped (default: 0)")
+        optparser.add_option('--skip_cutadapt', dest="skip_cutadapt", action="store_true", default=False,
+            help= "[facultative] Skip the cutadapt step (default: False)")
 
         ### Parse arguments
         opt, args = optparser.parse_args()
@@ -89,7 +92,8 @@ class FastqSweeper (object):
             adapter=opt.adapter,
             run=opt.run,
             min_mapq=int(opt.min_mapq),
-            min_match_size=int(opt.min_match_size))
+            min_match_size=int(opt.min_match_size),
+            skip_cutadapt=opt.skip_cutadapt)
 
     #~~~~~~~FONDAMENTAL METHODS~~~~~~~#
 
@@ -103,7 +107,8 @@ class FastqSweeper (object):
         adapter=None,
         run=False,
         min_mapq=0,
-        min_match_size=0):
+        min_match_size=0,
+        skip_cutadapt=False):
         """
         General initialization function for import and command line
         """
@@ -125,6 +130,7 @@ class FastqSweeper (object):
         self.run = run
         self.min_mapq = int(min_mapq)
         self.min_size = int(min_match_size)
+        self.skip_cutadapt=skip_cutadapt
         self.single = False if fastq_R2 else True
         self.basename = fastq_R1.rpartition('/')[2].partition('.')[0]
 
@@ -184,86 +190,125 @@ class FastqSweeper (object):
 
     def process_single_end (self):
 
-        # Generates names for output files
-        trimmed_fastq = self.basename+"_trim.fastq.gz"
-        cutadapt_report = self.basename+"_trim_report.txt"
-        all_bam = self.basename+"_all.bam"
-        mapped_bam = self.basename+"_mapped.bam"
-        unmapped_fastq = self.basename+"_clean.fastq.gz"
-
         ### Cutadapt
-        print ("\nStarting trimming with CUTADAPT")
-
-        cmd = "cutadapt {} {} {} -o {} > {}".format (self.cutadapt_opt, \
-        "-a file:"+self.adapter if self.adapter else "", self.fastq_R1, trimmed_fastq, cutadapt_report)
-
-        if self.run:
-            proc = Popen(cmd, shell=True)
-            proc.communicate()[0]
+        if self.skip_cutadapt:
+            print ("\nSkiping cutadapt step")
+            trimmed_fastq=self.fastq_R1
+            
         else:
-            print (cmd)
+            print ("\nStarting trimming with CUTADAPT")
+            trimmed_fastq = self.basename+"_trim.fastq.gz"
+            cutadapt_report = self.basename+"_trim_report.txt"
+            
+            cmd = "cutadapt {} {} {} -o {}".format (self.cutadapt_opt, \
+            "-a file:"+self.adapter if self.adapter else "", self.fastq_R1, trimmed_fastq)
+            
+            if self.run:
+                with open (cutadapt_report, "w") as fout:
+                    for line in self.yield_cmd(cmd):
+                        fout.write(line)
+            else:
+                print (cmd)
 
         ### BWA alignment, compression and sorting
         print ("\nStart aligning with BWA MEM, sort and compress")
+        mapped_bam = self.basename+"_mapped.bam"
+        unmapped_fastq = self.basename+"_clean.fastq.gz"
 
-        cmd1 = "bwa mem {} -t {} {} {}".format (self.bwa_opt, self.thread, self.index, trimmed_fastq)
-        cmd2 = "samtools view - -hb "
-        cmd3 = "samtools sort - -o a > {}".format (all_bam)
-
+        cmd = "bwa mem {0} -t {1} {2} {3}".format(self.bwa_opt, self.thread, self.index, trimmed_fastq)
+        
         if self.run:
-            p1 = Popen(cmd1, stdout=PIPE, shell=True)
-            p2 = Popen(cmd2, stdin=p1.stdout, stdout=PIPE, shell=True)
-            p3 = Popen(cmd3, stdin=p2.stdout, stdout=PIPE, shell=True)
-            p1.stdout.close()  # Allow p1 to receive a SIGPIPE if p2 exits.
-            p2.stdout.close()  # Allow p2 to receive a SIGPIPE if p3 exits.
-            print p3.communicate()[0]
-        else:
-            print ("{} | {} | {}".format (cmd1, cmd2, cmd3))
-
-        ## Post processing of reads
-        print ("\nStart sorting reads")
-
-        if not self.run:
-            print ("Done")
-            return
-
-        # Open input and output files within the same context manager block
-        with \
-            pysam.AlignmentFile(all_bam, "rb") as all_bam_h, \
-            pysam.AlignmentFile(mapped_bam, "wb", header=all_bam_h.header) as mapped_bam_h, \
-            gopen (unmapped_fastq, "w") as unmapped_fastq_h:
-
-            # Init a dict of counters
-            count = {"secondary":0, "unmapped":0, "lowmapq":0, "mapped":0, "short_mapped":0 }
-
-            # Parse reads
-            for read in all_bam_h:
-
-                # Always remove secondary alignments
-                if read.is_secondary:
-                    count["secondary"] +=1
-
-                # Extract mapped read
-                elif read.tid != -1 and read.mapq >= self.min_mapq:
-                    count["mapped"] += 1
-                    mapped_bam_h.write(read)
-
-                # Regenerate fastq from unmapped reads
-                # Consider short match, low mapq score and unmapped reads as unmapped
+            
+            sam_stream = self.yield_cmd(cmd)
+            
+            header= {"HD": {'VN':'1.5', 'SO':'unknown'}, 'SQ': [], 'RG': [], 'PG': {}}
+            
+            for line in sam_stream:
+                
+                # Parse the Sam header until a non header line is found
+                if line.startswith("@HD"):
+                    HD = {...}
+                    assert 'VN' in HD, "file is not standard compatible"
+                    
+                elif line.startswith("@SQ"):
+                    ...
+                    ...
+                    
+                elif line.startswith("@RG"):
+                
+                
+                elif line.startswith("@PG"):
+                
+                
                 else:
+                    break
+            
+            with \
+                pysam.AlignmentFile(mapped_bam, "wh", header=header) as bam,\
+                gopen (unmapped_fastq, "w") as fastq:
+            
+                # Process the first bam line found
+                aligned_seq = parse_bam_line(line)
+                if aligned_seq.is_aligned():
+                    bam.write(a)
+                else:
+                    fastq.write(a.to_fastq())
+                
+                # continue parsing sequences up to the end of the file
+                for line in sam_stream
+                    aligned_seq = parse_bam_line(line)
+                    if aligned_seq.is_aligned():
+                        bam.write(a)
+                    else:
+                        fastq.write(a.to_fastq())
+            
+        else:
+            print (cmd)
+            
+        ### Post processing of reads
+        #print ("\nStart sorting reads")
 
-                    # Update counters according to the category of the read
-                    if read.tid == -1:
-                        count["unmapped"] += 1
-                    elif len(read.query_alignment_sequence) < self.min_size:
-                        count["short_mapped"] += 1
-                    else: # not unmapped but mapq < min_mapq
-                        count["lowmapq"] +=1
+        #if not self.run:
+            #print ("Done")
+            #return
 
-                    # Regenerate fastq
-                    unmapped_fastq_h.write("{}\n{}\n+\n{}\n".format(read.qname, read.seq, read.qual))
+        ## Open input and output files within the same context manager block
+        #with \
+            #pysam.AlignmentFile(all_bam, "rb") as all_bam_h, \
+            #pysam.AlignmentFile(mapped_bam, "wb", header=all_bam_h.header) as mapped_bam_h, \
+            #gopen (unmapped_fastq, "w") as unmapped_fastq_h:
 
-        return count
+            ## Init a dict of counters
+            #count = {"secondary":0, "unmapped":0, "lowmapq":0, "mapped":0, "short_mapped":0 }
+
+            ## Parse reads
+            #for read in all_bam_h:
+
+                ## Always remove secondary alignments
+                #if read.is_secondary:
+                    #count["secondary"] +=1
+
+                ## Extract mapped read
+                #elif read.tid != -1 and read.mapq >= self.min_mapq:
+                    #count["mapped"] += 1
+                    #mapped_bam_h.write(read)
+
+                ## Regenerate fastq from unmapped reads
+                ## Consider short match, low mapq score and unmapped reads as unmapped
+                #else:
+
+                    ## Update counters according to the category of the read
+                    #if read.tid == -1:
+                        #count["unmapped"] += 1
+                    #elif len(read.query_alignment_sequence) < self.min_size:
+                        #count["short_mapped"] += 1
+                    #else: # not unmapped but mapq < min_mapq
+                        #count["lowmapq"] +=1
+
+                    ## Regenerate fastq
+                    #unmapped_fastq_h.write("{}\n{}\n+\n{}\n".format(read.qname, read.seq, read.qual))
+
+        #return count
 
         #Removing the original bam file which is no longer needed
         #remove(bam)
@@ -271,28 +316,53 @@ class FastqSweeper (object):
 
     def process_paired_end (self):
         pass
-        # cutadapt
-
-        # bwa alignment
-
-        # bwa post processing of mapped reads
-
-        # bwa post processing of unmapped reads
 
     #~~~~~~~PRIVATE METHODS~~~~~~~#
 
-    def _dict_to_report(self, d, tab=""):
+    def yield_cmd (self, cmd):
+        """ 
+        Decompose shell commands in elementary commands, pipe them together and return output from
+        last the call to subprocess.Popen. (from stackoverflow.com/questions/4106565/)
         """
-        Recursive function to return a text report from nested dict or OrderedDict objects
-        """
-        report = ""
-        for name, value in d.items():
-            if type(value) == OrderedDict or type(value) == dict:
-                report += "{}{}\n".format(tab, name)
-                report += self._dict_to_report(value, tab=tab+"\t")
-            else:
-                report += "{}{}\t{}\n".format(tab, name, value)
-        return report
+        # Split the commands
+        split_cmd = shlex.split(cmd)
+        print (split_cmd)
+        
+        proc = Popen(split_cmd, stdout=PIPE)
+        
+        for i in proc.communicate()[0].splitlines():
+            yield i
+
+
+class BamSequence (object):
+    pass
+
+class BamFileWriter (object):
+    
+    def __init__ (self, name, header= {"HD": {'VN':'1.5', 'SO':'unknown'}, 'SQ': [], 'RG': [], 'PG': {}}):
+        self.name = name
+        self.header = header
+        self.init = False
+        
+    def add_reference (self, SQ_dict):
+        self.header['SQ'].append(SQ_dict)
+        
+    def add_read_group (self, RG_dict):
+        self.header['RG'].append(RG_dict)
+   
+    def add_program (self, PG_dict):
+        self.header['PG'] = PG_dict
+    
+    def add_header_line (self, HD_dict):
+        self.header['HD'] = HD_dict
+    
+    def write(self):
+        if not self.init:
+            self._init_file()
+        
+    
+    def _init_file(self):
+        
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 #   TOP LEVEL INSTRUCTIONS
