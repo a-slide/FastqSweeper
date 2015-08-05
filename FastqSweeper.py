@@ -194,15 +194,15 @@ class FastqSweeper (object):
         if self.skip_cutadapt:
             print ("\nSkiping cutadapt step")
             trimmed_fastq=self.fastq_R1
-            
+
         else:
             print ("\nStarting trimming with CUTADAPT")
             trimmed_fastq = self.basename+"_trim.fastq.gz"
             cutadapt_report = self.basename+"_trim_report.txt"
-            
+
             cmd = "cutadapt {} {} {} -o {}".format (self.cutadapt_opt, \
             "-a file:"+self.adapter if self.adapter else "", self.fastq_R1, trimmed_fastq)
-            
+
             if self.run:
                 with open (cutadapt_report, "w") as fout:
                     for line in self.yield_cmd(cmd):
@@ -216,44 +216,46 @@ class FastqSweeper (object):
         unmapped_fastq = self.basename+"_clean.fastq.gz"
 
         cmd = "bwa mem {0} -t {1} {2} {3}".format(self.bwa_opt, self.thread, self.index, trimmed_fastq)
-        
+
         if self.run:
-            
-            sam_stream = self.yield_cmd(cmd)
-            
-            header= {"HD": {'VN':'1.5', 'SO':'unknown'}, 'SQ': [], 'RG': [], 'PG': {}}
-            
-            for line in sam_stream:
-                
-                # Parse the Sam header until a non header line is found
-                if line.startswith("@HD"):
-                    HD = {...}
-                    assert 'VN' in HD, "file is not standard compatible"
-                    
-                elif line.startswith("@SQ"):
-                    ...
-                    ...
-                    
-                elif line.startswith("@RG"):
-                
-                
-                elif line.startswith("@PG"):
-                
-                
+
+            sam = self.yield_cmd(cmd)
+
+            header = {}
+            for line in sam:
+                if line.startswith("@"):
+                    split_line = line.strip().split("\t")
+                    tag = split_line[0].lstrip("@")
+
+                    if tag == "HD":
+                        header["HD"] = {}
+                        for field in split_line[1:]:
+                            key, value = field.split(":")
+                            header["HD"][key] = value
+
+                    else:
+                        d={}
+                        if tag not in header:
+                            header[tag]=[]
+                        for field in split_line[1:]:
+                            key, value = field.split(":")
+                            d[key] = int(value) if value.isdigit() else value
+                        header[tag].append(d)
+
                 else:
                     break
-            
+
             with \
-                pysam.AlignmentFile(mapped_bam, "wh", header=header) as bam,\
+                pysam.AlignmentFile(mapped_bam, "wb", header=header) as bam,\
                 gopen (unmapped_fastq, "w") as fastq:
-            
+
                 # Process the first bam line found
                 aligned_seq = parse_bam_line(line)
                 if aligned_seq.is_aligned():
                     bam.write(a)
                 else:
                     fastq.write(a.to_fastq())
-                
+
                 # continue parsing sequences up to the end of the file
                 for line in sam_stream
                     aligned_seq = parse_bam_line(line)
@@ -261,10 +263,10 @@ class FastqSweeper (object):
                         bam.write(a)
                     else:
                         fastq.write(a.to_fastq())
-            
+
         else:
             print (cmd)
-            
+
         ### Post processing of reads
         #print ("\nStart sorting reads")
 
@@ -320,16 +322,16 @@ class FastqSweeper (object):
     #~~~~~~~PRIVATE METHODS~~~~~~~#
 
     def yield_cmd (self, cmd):
-        """ 
+        """
         Decompose shell commands in elementary commands, pipe them together and return output from
         last the call to subprocess.Popen. (from stackoverflow.com/questions/4106565/)
         """
         # Split the commands
         split_cmd = shlex.split(cmd)
         print (split_cmd)
-        
+
         proc = Popen(split_cmd, stdout=PIPE)
-        
+
         for i in proc.communicate()[0].splitlines():
             yield i
 
@@ -338,31 +340,31 @@ class BamSequence (object):
     pass
 
 class BamFileWriter (object):
-    
+
     def __init__ (self, name, header= {"HD": {'VN':'1.5', 'SO':'unknown'}, 'SQ': [], 'RG': [], 'PG': {}}):
         self.name = name
         self.header = header
         self.init = False
-        
+
     def add_reference (self, SQ_dict):
         self.header['SQ'].append(SQ_dict)
-        
+
     def add_read_group (self, RG_dict):
         self.header['RG'].append(RG_dict)
-   
+
     def add_program (self, PG_dict):
         self.header['PG'] = PG_dict
-    
+
     def add_header_line (self, HD_dict):
         self.header['HD'] = HD_dict
-    
+
     def write(self):
         if not self.init:
             self._init_file()
-        
-    
+
+
     def _init_file(self):
-        
+
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 #   TOP LEVEL INSTRUCTIONS
