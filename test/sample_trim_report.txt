@@ -1,0 +1,16 @@
+This is cutadapt 1.8.1 with Python 2.7.6
+Command line parameters: -m 25 -q 30,30 --trim-n sample.fastq.gz -o sample_trim.fastq.gz
+Trimming 0 adapters with at most 10.0% errors in single-end mode ...
+Finished in 0.01 s (909 us/read; 0.07 M reads/minute).
+
+=== Summary ===
+
+Total reads processed:                      11
+Reads with adapters:                         0 (0.0%)
+Reads that were too short:                   3 (27.3%)
+Reads written (passing filters):             8 (72.7%)
+
+Total basepairs processed:         1,661 bp
+Quality-trimmed:                     769 bp (46.3%)
+Total written (filtered):            881 bp (53.0%)
+

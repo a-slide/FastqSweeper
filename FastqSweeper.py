@@ -30,10 +30,18 @@ from datetime import datetime
 import pysam
 
 # Local packages
+from BAMHeader import BAMHeader
+from BAMSequenceParser import BAMSequenceParser
 
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 class FastqSweeper (object):
     """
+    FastqSweeper use Cutadapt to trim reads based on quality, presence of N, and adapters and then
+    perform a step of subtractive mapping with bwa Mem. BWA stream is parsed directly to separate
+    the properly mapped reads that are written in a bam file, from the non-properly mapped reads
+    that are written in a fastq file ready to be realign for further analysis.
+    A report containing the options used and reads counts depending of their category is also
+    generated.
     """
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 
@@ -129,11 +137,10 @@ class FastqSweeper (object):
         self.adapter = adapter
         self.run = run
         self.min_mapq = int(min_mapq)
-        self.min_size = int(min_match_size)
+        self.min_match_size = int(min_match_size)
         self.skip_cutadapt=skip_cutadapt
         self.single = False if fastq_R2 else True
         self.basename = fastq_R1.rpartition('/')[2].partition('.')[0]
-
 
     #~~~~~~~PUBLIC METHODS~~~~~~~#
 
@@ -147,7 +154,7 @@ class FastqSweeper (object):
         if self.run:
             print ("\nRunning in real mode")
         else:
-            print ("\nRunning in safe test mode")
+            print ("\nRunning in demo mode")
 
         if self.single:
             print ("\nProcessing fastq in single-end mode ")
@@ -163,34 +170,30 @@ class FastqSweeper (object):
             with open (self.basename+"_FastqSweeper_report.csv", "w") as report:
                 report.write ("Program {}\tDate {}\n".format(self.VERSION,str(datetime.today())))
                 report.write ("\nRUN PARAMETERS\n")
-                report.write("  Index basename\t{}\n".format(self.index))
-                report.write("  Fastq R1 path\t{}\n".format(self.fastq_R1))
-                report.write("  Fastq R2 path\t{}\n".format(self.fastq_R2 if self.fastq_R2 else "None"))
-                report.write("  Number of thread\t{}\n".format(self.thread))
-                report.write("  Bwa options\t{}\n".format(self.bwa_opt))
-                report.write("  Cutadapt options\t{}\n".format(self.cutadapt_opt))
-                report.write("  Adapter file\t{}\n".format(self.adapter if self.adapter else "None"))
-                report.write("  Cutoff MapQ score\t{}\n".format(self.min_mapq))
-                report.write("  Cutoff match length\t{}\n".format(self.min_size))
-                report.write("  Mode used\t{}\n".format("single-end" if self.single else "paired-end"))
-                report.write("  Output files basename\t{}\n".format(self.basename))
+                report.write("  Index basename:\t{}\n".format(self.index))
+                report.write("  Fastq R1 path:\t{}\n".format(self.fastq_R1))
+                report.write("  Fastq R2 path:\t{}\n".format(self.fastq_R2 if self.fastq_R2 else "None"))
+                report.write("  Number of thread:\t{}\n".format(self.thread))
+                report.write("  Bwa options:\t{}\n".format(self.bwa_opt))
+                report.write("  Cutadapt options:\t{}\n".format(self.cutadapt_opt))
+                report.write("  Adapter file:\t{}\n".format(self.adapter if self.adapter else "None"))
+                report.write("  Cutoff MapQ score:\t{}\n".format(self.min_mapq))
+                report.write("  Cutoff match length:\t{}\n".format(self.min_match_size))
+                report.write("  Mode used:\t{}\n".format("single-end" if self.single else "paired-end"))
+                report.write("  Output files basename:\t{}\n".format(self.basename))
                 report.write("\nREAD COUNT PER CATEGORY\n")
-                report.write("  Mapped\t{}\n".format(count["mapped"]))
-                report.write("  Unmapped\t{}\n".format(count["unmapped"]+count["short_mapped"]+count["lowmapq"]))
-                report.write("  Total\t{}\n\n".format(count["mapped"]+count["unmapped"]+count["short_mapped"]+count["lowmapq"]))
-                report.write("  Unaligned\t{}\n".format(count["unmapped"]))
-                report.write("  Short match\t{}\n".format(count["short_mapped"]))
-                report.write("  Low MapQ\t{}\n".format(count["lowmapq"]))
-                report.write("  Secondary\t{}\n".format(count["secondary"]))
+                for key, value in count.items():
+                    report.write("  {}:\t{}\n".format(key, value))
 
         # Finalize
         print ("\nDone in {}s".format(round(time()-start_time, 3)))
         return(0)
 
-
     def process_single_end (self):
 
-        ### Cutadapt
+        count = OrderedDict()
+
+        ##### CUTADAPT #####
         if self.skip_cutadapt:
             print ("\nSkiping cutadapt step")
             trimmed_fastq=self.fastq_R1
@@ -202,119 +205,93 @@ class FastqSweeper (object):
 
             cmd = "cutadapt {} {} {} -o {}".format (self.cutadapt_opt, \
             "-a file:"+self.adapter if self.adapter else "", self.fastq_R1, trimmed_fastq)
+            print (cmd)
 
             if self.run:
                 with open (cutadapt_report, "w") as fout:
                     for line in self.yield_cmd(cmd):
                         fout.write(line)
-            else:
-                print (cmd)
 
-        ### BWA alignment, compression and sorting
-        print ("\nStart aligning with BWA MEM, sort and compress")
+                # Extract values from cutadapt_report
+                with open (cutadapt_report, "r") as fin:
+                    for line in fin:
+                        if line.startswith("Total reads processed:"):
+                            count["Total reads before trimming"] = int(line.split()[-1].replace(",",""))
+                        if line.startswith("Reads with adapters:"):
+                            count["Reads with adapters"] = int(line.split()[-2].replace(",",""))
+                        if line.startswith("Reads that were too short:"):
+                            count["Reads that were too short"] = int(line.split()[-2].replace(",",""))
+                        if line.startswith("Reads written (passing filters):"):
+                            count["Reads after trimming"] = int(line.split()[-2].replace(",",""))
+
+        ##### BWA #####
+        print ("\nStart aligning with BWA MEM and sort reads")
         mapped_bam = self.basename+"_mapped.bam"
         unmapped_fastq = self.basename+"_clean.fastq.gz"
 
+        # Prepare the command line
         cmd = "bwa mem {0} -t {1} {2} {3}".format(self.bwa_opt, self.thread, self.index, trimmed_fastq)
+        print (cmd)
 
         if self.run:
+            #counters
+            total = mapped = unmapped = 0
 
+            # Initialize the stream line per line generator
             sam = self.yield_cmd(cmd)
 
-            header = {}
+            # Initialize and parse the bam header
+            h = BAMHeader ()
             for line in sam:
+
+                # Add the line to BAMheader object until the first non header line is found
                 if line.startswith("@"):
-                    split_line = line.strip().split("\t")
-                    tag = split_line[0].lstrip("@")
-
-                    if tag == "HD":
-                        header["HD"] = {}
-                        for field in split_line[1:]:
-                            key, value = field.split(":")
-                            header["HD"][key] = value
-
-                    else:
-                        d={}
-                        if tag not in header:
-                            header[tag]=[]
-                        for field in split_line[1:]:
-                            key, value = field.split(":")
-                            d[key] = int(value) if value.isdigit() else value
-                        header[tag].append(d)
-
+                    h.add_header_line(line)
                 else:
                     break
 
+            # Initialize a bam read parser
+            bam_parser = BAMSequenceParser (header=h, skip_secondary=False)
+
+            # Create an output bam file for mapped reads and an ouput fastq file for unmapped reads
             with \
-                pysam.AlignmentFile(mapped_bam, "wb", header=header) as bam,\
-                gopen (unmapped_fastq, "w") as fastq:
+                pysam.AlignmentFile (mapped_bam , "wb", header=h.header) as bam_out,\
+                gopen (unmapped_fastq, "w") as fastq_out:
 
-                # Process the first bam line found
-                aligned_seq = parse_bam_line(line)
-                if aligned_seq.is_aligned():
-                    bam.write(a)
-                else:
-                    fastq.write(a.to_fastq())
-
-                # continue parsing sequences up to the end of the file
-                for line in sam_stream
-                    aligned_seq = parse_bam_line(line)
-                    if aligned_seq.is_aligned():
-                        bam.write(a)
+                # Process the first sequence found when parsing header
+                read = bam_parser.parse_line(line)
+                total += 1
+                if read:
+                    if read.is_properly_mapped(self.min_mapq, self.min_match_size):
+                        bam_out.write(read.to_bam())
+                        mapped += 1
                     else:
-                        fastq.write(a.to_fastq())
+                        fastq_out.write(read.to_fastq())
+                        unmapped += 1
 
-        else:
-            print (cmd)
+                # Process the remaining sequences
+                for line in sam:
+                    read = bam_parser.parse_line(line)
+                    total += 1
+                    if total % 100000 == 0:
+                        print ("{} sequence processed".format(total))
+                    if read:
+                        if read.is_properly_mapped(self.min_mapq, self.min_match_size):
+                            bam_out.write(read.to_bam())
+                            mapped += 1
+                        else:
+                            fastq_out.write(read.to_fastq())
+                            unmapped += 1
 
-        ### Post processing of reads
-        #print ("\nStart sorting reads")
+            # Retrieve Count values from the BAMSequenceParser object
+            count["Total reads processed by BWA"] = total
+            count["Reads Mapped"] = mapped
+            count["Reads Unmapped"] = unmapped
+            count["Primary read"] = bam_parser.count["primary"]
+            count["Secondary read"] = bam_parser.count["secondary"]
+            count["Invalid reads"] = bam_parser.count["invalid"]
 
-        #if not self.run:
-            #print ("Done")
-            #return
-
-        ## Open input and output files within the same context manager block
-        #with \
-            #pysam.AlignmentFile(all_bam, "rb") as all_bam_h, \
-            #pysam.AlignmentFile(mapped_bam, "wb", header=all_bam_h.header) as mapped_bam_h, \
-            #gopen (unmapped_fastq, "w") as unmapped_fastq_h:
-
-            ## Init a dict of counters
-            #count = {"secondary":0, "unmapped":0, "lowmapq":0, "mapped":0, "short_mapped":0 }
-
-            ## Parse reads
-            #for read in all_bam_h:
-
-                ## Always remove secondary alignments
-                #if read.is_secondary:
-                    #count["secondary"] +=1
-
-                ## Extract mapped read
-                #elif read.tid != -1 and read.mapq >= self.min_mapq:
-                    #count["mapped"] += 1
-                    #mapped_bam_h.write(read)
-
-                ## Regenerate fastq from unmapped reads
-                ## Consider short match, low mapq score and unmapped reads as unmapped
-                #else:
-
-                    ## Update counters according to the category of the read
-                    #if read.tid == -1:
-                        #count["unmapped"] += 1
-                    #elif len(read.query_alignment_sequence) < self.min_size:
-                        #count["short_mapped"] += 1
-                    #else: # not unmapped but mapq < min_mapq
-                        #count["lowmapq"] +=1
-
-                    ## Regenerate fastq
-                    #unmapped_fastq_h.write("{}\n{}\n+\n{}\n".format(read.qname, read.seq, read.qual))
-
-        #return count
-
-        #Removing the original bam file which is no longer needed
-        #remove(bam)
-
+        return count
 
     def process_paired_end (self):
         pass
@@ -323,49 +300,18 @@ class FastqSweeper (object):
 
     def yield_cmd (self, cmd):
         """
-        Decompose shell commands in elementary commands, pipe them together and return output from
-        last the call to subprocess.Popen. (from stackoverflow.com/questions/4106565/)
+        Decompose shell command in list of elementary elements and parse the output line by
+        line using a yield statement
         """
         # Split the commands
         split_cmd = shlex.split(cmd)
-        print (split_cmd)
 
+        # Prepare the popen object
         proc = Popen(split_cmd, stdout=PIPE)
 
-        for i in proc.communicate()[0].splitlines():
-            yield i
-
-
-class BamSequence (object):
-    pass
-
-class BamFileWriter (object):
-
-    def __init__ (self, name, header= {"HD": {'VN':'1.5', 'SO':'unknown'}, 'SQ': [], 'RG': [], 'PG': {}}):
-        self.name = name
-        self.header = header
-        self.init = False
-
-    def add_reference (self, SQ_dict):
-        self.header['SQ'].append(SQ_dict)
-
-    def add_read_group (self, RG_dict):
-        self.header['RG'].append(RG_dict)
-
-    def add_program (self, PG_dict):
-        self.header['PG'] = PG_dict
-
-    def add_header_line (self, HD_dict):
-        self.header['HD'] = HD_dict
-
-    def write(self):
-        if not self.init:
-            self._init_file()
-
-
-    def _init_file(self):
-
-
+        # yield results line by line
+        for line in proc.stdout:
+            yield line
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#
 #   TOP LEVEL INSTRUCTIONS
 #~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~#

@@ -1,0 +1,26 @@
+Program FastqSweeper 0.1	Date 2015-08-06 19:07:28.158491
+
+RUN PARAMETERS
+  Index basename:	ref.fa.gz
+  Fastq R1 path:	sample.fastq.gz
+  Fastq R2 path:	None
+  Number of thread:	4
+  Bwa options:	-M
+  Cutadapt options:	-m 25 -q 30,30 --trim-n
+  Adapter file:	None
+  Cutoff MapQ score:	0
+  Cutoff match length:	0
+  Mode used:	single-end
+  Output files basename:	sample
+
+READ COUNT PER CATEGORY
+  Total reads before trimming:	11
+  Reads with adapters:	0
+  Reads that were too short:	3
+  Reads after trimming:	8
+  Total reads processed by BWA:	8
+  Reads Mapped:	7
+  Reads Unmapped:	1
+  Primary read:	8
+  Secondary read:	0
+  Invalid reads:	0

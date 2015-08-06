@@ -1,6 +1,0 @@
-@HD	VN:1.5	SO:unknown
-@SQ	SN:rAAV_RSV_GFP	LN:2216
-@SQ	SN:Bacterial_backbone	LN:2811
-@SQ	SN:Helper_plasmid	LN:22757
-@SQ	SN:Ad5_in_293_genome	LN:4344
-@PG	PN:bwa	ID:bwa	VN:0.7.12-r1039	CL:bwa mem ref.fa.gz sample.fastq.gz
