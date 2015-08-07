@@ -1,15 +1,15 @@
-Program FastqSweeper 0.1	Date 2015-08-06 19:07:28.158491
+Program FastqSweeper 0.1	Date 2015-08-07 11:05:30.978633
 
 RUN PARAMETERS
   Index basename:	ref.fa.gz
   Fastq R1 path:	sample.fastq.gz
   Fastq R2 path:	None
-  Number of thread:	4
+  Number of thread:	12
   Bwa options:	-M
   Cutadapt options:	-m 25 -q 30,30 --trim-n
   Adapter file:	None
-  Cutoff MapQ score:	0
-  Cutoff match length:	0
+  Cutoff MapQ score:	30
+  Cutoff match length:	25
   Mode used:	single-end
   Output files basename:	sample
 

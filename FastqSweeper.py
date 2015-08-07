@@ -57,9 +57,6 @@ class FastqSweeper (object):
         """
         init class method for instantiation from command line. Parse arguments parse CL arguments
         """
-
-        print("\nParse commande line arguments")
-
         ### Define parser usage, options
         optparser = optparse.OptionParser(usage = self.USAGE, version = self.VERSION)
 
@@ -120,13 +117,19 @@ class FastqSweeper (object):
         """
         General initialization function for import and command line
         """
-
-        print("\nInitialize FastqSweeper")
-
+        
         ### Verifications
         assert index, "A path to the bwa index is mandatory"
         assert fastq_R1, "A path to the fastq file is mandatory"
-
+        
+        # Starting message
+        if fastq_R2:
+            print("\n\n##### PROCESS {}/{} (PE mode) #####".format(fastq_R1, fastq_R2))
+        else:
+            print("\n\n##### PROCESS {} (SE mode) #####".format(fastq_R1))
+        
+        print("\nInitialize FastqSweeper")
+        
         ### Storing Variables
         self.index = index
         self.fastq_R1 = fastq_R1
@@ -273,7 +276,7 @@ class FastqSweeper (object):
                 for line in sam:
                     read = bam_parser.parse_line(line)
                     total += 1
-                    if total % 100000 == 0:
+                    if total % 1000000 == 0:
                         print ("{} sequence processed".format(total))
                     if read:
                         if read.is_properly_mapped(self.min_mapq, self.min_match_size):
